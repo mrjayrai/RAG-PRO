@@ -11,18 +11,42 @@ import database
 # Load environment variables from .env file
 load_dotenv()
 
-PUBLIC_DIR = os.path.join("data", "public")
+USERS_DIR = os.path.join("data", "users")
 ADMIN_DIR = os.path.join("data", "admin")
-os.makedirs(PUBLIC_DIR, exist_ok=True)
+os.makedirs(USERS_DIR, exist_ok=True)
 os.makedirs(ADMIN_DIR, exist_ok=True)
 
 # Persistent vector store paths
 VECTORSTORE_DIR = "vectorstores"
-PUBLIC_VECTORSTORE_PATH = os.path.join(VECTORSTORE_DIR, "public_index")
 ADMIN_VECTORSTORE_PATH = os.path.join(VECTORSTORE_DIR, "admin_index")
 os.makedirs(VECTORSTORE_DIR, exist_ok=True)
 
 database.init_db()
+
+
+def get_user_paths(user_id: int):
+    document_dir = os.path.join(USERS_DIR, str(user_id), "documents")
+    vectorstore_dir = os.path.join(USERS_DIR, str(user_id), "vectorstore")
+    os.makedirs(document_dir, exist_ok=True)
+    os.makedirs(vectorstore_dir, exist_ok=True)
+    return document_dir, vectorstore_dir
+
+
+def get_document_path(document: dict):
+    if document.get("visibility") == "admin":
+        return os.path.join(ADMIN_DIR, document["filename"])
+    return os.path.join(USERS_DIR, str(document.get("owner_id")), "documents", document["filename"])
+
+
+def get_all_user_document_dirs():
+    all_dirs = []
+    if not os.path.exists(USERS_DIR):
+        return all_dirs
+    for user_folder in os.listdir(USERS_DIR):
+        candidate = os.path.join(USERS_DIR, user_folder, "documents")
+        if os.path.isdir(candidate):
+            all_dirs.append(candidate)
+    return all_dirs
 
 # Langchain Imports
 from langchain_community.document_loaders import PyPDFLoader, Docx2txtLoader, TextLoader
@@ -38,14 +62,14 @@ from langchain.chains import create_retrieval_chain
 # ==========================================
 # 1. Document Ingestion & File Mgmt
 # ==========================================
-def save_uploaded_files(uploaded_files, target_dir, visibility='public'):
+def save_uploaded_files(uploaded_files, target_dir, owner_id, visibility='public'):
     """Saves Streamlit uploaded files to the specified directory and database."""
     saved_count = 0
     for uploaded_file in uploaded_files:
         file_path = os.path.join(target_dir, uploaded_file.name)
         with open(file_path, "wb") as f:
             f.write(uploaded_file.getbuffer())
-        database.add_document(uploaded_file.name, visibility=visibility)
+        database.add_document(uploaded_file.name, owner_id, visibility=visibility)
         saved_count += 1
     return saved_count
 
@@ -106,8 +130,10 @@ def get_vector_store(chunks: List[Document], store_path: str):
     Loads or creates FAISS vector store safely.
     """
     embeddings = HuggingFaceEmbeddings(
-        model_name="sentence-transformers/all-mpnet-base-v2"
-    )
+    model_name="sentence-transformers/all-MiniLM-L6-v2",
+    model_kwargs={"device": "cpu"},
+    encode_kwargs={"normalize_embeddings": True}
+)
 
     # Load existing vector store if present
     if os.path.exists(store_path):
@@ -136,7 +162,7 @@ def get_vector_store(chunks: List[Document], store_path: str):
 # ==========================================
 # 4. Retrieval & Generation
 # ==========================================
-def build_rag_chain(vector_store, groq_api_key: str):
+def build_rag_chain(vector_store, groq_api_key: str, extra_context: str = None):
     """
     Builds the retrieval and generation pipeline.
     Retrieves top 5 chunks and passes them to Llama 3 via Groq.
@@ -144,11 +170,11 @@ def build_rag_chain(vector_store, groq_api_key: str):
     """
     # Initialize Llama 3 model via Groq API
     llm = ChatGroq(
-        groq_api_key=groq_api_key, 
+        groq_api_key=groq_api_key,
         model_name="llama-3.1-8b-instant", # Updated model because previous was decommissioned
         temperature=0.0 # Keep temperature 0 for strictly factual responses
     )
-    
+
     # Strict System Prompt but with ChatGPT-style Formatting Instructions
     system_prompt = (
         "You are an expert AI assistant providing detailed, structured, and highly readable answers. "
@@ -159,9 +185,16 @@ def build_rag_chain(vector_store, groq_api_key: str):
         "- Provide a comprehensive and detailed explanation based entirely on the context.\n"
         "- Use Markdown formatting (bolding key terms, using bullet points or numbered lists where appropriate).\n"
         "- If the context allows, break down the answer logically into sections like 'Simple explanation', 'Key features', or 'Examples'.\n\n"
-        "Context:\n{context}"
     )
-    
+
+    if extra_context:
+        system_prompt += (
+            "Use the following relevant admin memory to inform your response when it is applicable:\n"
+            f"{extra_context}\n\n"
+        )
+
+    system_prompt += "Context:\n{context}"
+
     prompt = PromptTemplate(
         input_variables=["context", "input"],
         template=f"{system_prompt}\n\nQuestion: {{input}}\nAnswer:"
@@ -175,6 +208,13 @@ def build_rag_chain(vector_store, groq_api_key: str):
     
     retrieval_chain = create_retrieval_chain(retriever, document_chain)
     return retrieval_chain
+
+
+def build_admin_memory_context():
+    messages = database.get_admin_messages()
+    if not messages:
+        return None
+    return "\n".join([f"{msg['role'].capitalize()}: {msg['content']}" for msg in messages])
 
 # ==========================================
 # 5. Validation / Evaluation Metrics
@@ -525,86 +565,160 @@ def main():
     
     st.title("HalluRAG: Document Q&A Pipeline")
     
-    # Initialize session state for chat history and vector store
-    if "messages" not in st.session_state:
-        st.session_state.messages = []
-    if "session_id" not in st.session_state:
-        st.session_state.session_id = str(uuid.uuid4())
-        # Load previous history if any (usually empty for a new uuid, but good pattern)
-        history = database.get_chat_history(st.session_state.session_id)
-        if history:
-            st.session_state.messages = history
-    if "public_vector_store" not in st.session_state:
-        st.session_state.public_vector_store = None
-    if "admin_vector_store" not in st.session_state:
-        st.session_state.admin_vector_store = None
+    # Initialize session state for auth, chat history, and vector stores
+    if "user" not in st.session_state:
+        st.session_state.user = None
+    if "user_id" not in st.session_state:
+        st.session_state.user_id = None
+    if "is_authenticated" not in st.session_state:
+        st.session_state.is_authenticated = False
+    if "role" not in st.session_state:
+        st.session_state.role = "user"
     if "is_admin" not in st.session_state:
         st.session_state.is_admin = False
+    if "session_id" not in st.session_state:
+        st.session_state.session_id = None
+    if "messages" not in st.session_state:
+        st.session_state.messages = []
+    if "user_vector_store" not in st.session_state:
+        st.session_state.user_vector_store = None
+    if "admin_vector_store" not in st.session_state:
+        st.session_state.admin_vector_store = None
         
     groq_api_key = os.environ.get("GROQ_API_KEY")
     admin_pass = os.environ.get("ADMIN_PASSWORD", "admin123")
     
     # Ensure admin user is seeded in the DB
     database.seed_admin_if_needed(admin_pass)
-    
+
+    if not st.session_state.is_authenticated:
+        login_tab, register_tab = st.tabs(["Login", "Register"])
+        with login_tab:
+            st.markdown("### Login")
+            login_username = st.text_input("Username or Email", key="login_username")
+            login_password = st.text_input("Password", type="password", key="login_password")
+            if st.button("Login", use_container_width=True, type="primary"):
+                if not login_username or not login_password:
+                    st.error("Please enter both username and password.")
+                else:
+                    user = database.authenticate_user(login_username, login_password)
+                    if user:
+                        st.session_state.user = user["username"]
+                        st.session_state.user_id = user["id"]
+                        st.session_state.role = user["role"]
+                        st.session_state.is_authenticated = True
+                        st.session_state.is_admin = user["role"] == "admin"
+                        st.session_state.messages = []
+                        st.session_state.session_id = str(uuid.uuid4())
+                        database.create_chat_session(st.session_state.session_id, st.session_state.user_id)
+                        st.success("Logged in successfully.")
+                        st.rerun()
+                    else:
+                        st.error("Invalid credentials.")
+        with register_tab:
+            st.markdown("### Register")
+            register_username = st.text_input("Username or Email", key="register_username")
+            register_password = st.text_input("Password", type="password", key="register_password")
+            if st.button("Create account", use_container_width=True, type="secondary"):
+                if not register_username or not register_password:
+                    st.error("Please enter both username and password.")
+                else:
+                    created = database.create_user(register_username, register_password, role="user")
+                    if created:
+                        st.success("Account created successfully. Please log in.")
+                    else:
+                        st.error("Username already exists. Please choose another.")
+        return
+
+    if st.session_state.session_id is None:
+        st.session_state.session_id = str(uuid.uuid4())
+        database.create_chat_session(st.session_state.session_id, st.session_state.user_id)
+
+    if not st.session_state.messages:
+        history = database.get_chat_history(
+            st.session_state.session_id,
+            user_id=st.session_state.user_id,
+            is_admin=st.session_state.is_admin
+        )
+        if history:
+            st.session_state.messages = history
+
+    # Auto-initialize vector stores on startup
+    user_doc_dir, user_vector_dir = get_user_paths(st.session_state.user_id)
+
     def rebuild_vector_stores():
-        # Remove old indexes completely
-        if os.path.exists(PUBLIC_VECTORSTORE_PATH):
-            shutil.rmtree(PUBLIC_VECTORSTORE_PATH, ignore_errors=True)
+        if st.session_state.is_admin:
+            if os.path.exists(ADMIN_VECTORSTORE_PATH):
+                shutil.rmtree(ADMIN_VECTORSTORE_PATH, ignore_errors=True)
 
-        if os.path.exists(ADMIN_VECTORSTORE_PATH):
-            shutil.rmtree(ADMIN_VECTORSTORE_PATH, ignore_errors=True)
+            all_docs = []
+            for doc_dir in get_all_user_document_dirs():
+                all_docs.extend(load_directory_documents(doc_dir))
+            all_docs.extend(load_directory_documents(ADMIN_DIR))
 
-        with st.spinner("Reading public documents..."):
-            docs = load_directory_documents(PUBLIC_DIR)
-            if docs:
-                st.session_state.public_vector_store = get_vector_store(
-                    chunk_documents(docs),
-                    PUBLIC_VECTORSTORE_PATH
-                )
-            else:
-                st.session_state.public_vector_store = None
-
-        with st.spinner("Reading admin documents..."):
-            admin_docs = list(docs) if docs else []
-            admin_docs.extend(load_directory_documents(ADMIN_DIR))
-            if admin_docs:
+            if all_docs:
                 st.session_state.admin_vector_store = get_vector_store(
-                    chunk_documents(admin_docs),
+                    chunk_documents(all_docs),
                     ADMIN_VECTORSTORE_PATH
                 )
             else:
                 st.session_state.admin_vector_store = None
-                
-        st.success("Vector Stores rebuilt and ready!")
+        else:
+            if os.path.exists(user_vector_dir):
+                shutil.rmtree(user_vector_dir, ignore_errors=True)
 
-    # Auto-initialize vector stores on startup
-    if st.session_state.public_vector_store is None:
-        docs = load_directory_documents(PUBLIC_DIR)
+            docs = load_directory_documents(user_doc_dir)
+            if docs:
+                st.session_state.user_vector_store = get_vector_store(
+                    chunk_documents(docs),
+                    user_vector_dir
+                )
+            else:
+                st.session_state.user_vector_store = None
+
+    if st.session_state.user_vector_store is None and not st.session_state.is_admin:
+        docs = load_directory_documents(user_doc_dir)
         if docs:
-            st.session_state.public_vector_store = get_vector_store(
+            st.session_state.user_vector_store = get_vector_store(
                 chunk_documents(docs),
-                PUBLIC_VECTORSTORE_PATH
+                user_vector_dir
             )
-            
+
     if st.session_state.admin_vector_store is None and st.session_state.is_admin:
-        docs = load_directory_documents(PUBLIC_DIR)
-        docs.extend(load_directory_documents(ADMIN_DIR))
-        if docs:
+        all_docs = []
+        for doc_dir in get_all_user_document_dirs():
+            all_docs.extend(load_directory_documents(doc_dir))
+        all_docs.extend(load_directory_documents(ADMIN_DIR))
+        if all_docs:
             st.session_state.admin_vector_store = get_vector_store(
-                chunk_documents(docs),
+                chunk_documents(all_docs),
                 ADMIN_VECTORSTORE_PATH
             )
 
     def get_current_vector_store():
-        return st.session_state.admin_vector_store if st.session_state.is_admin else st.session_state.public_vector_store
+        return st.session_state.admin_vector_store if st.session_state.is_admin else st.session_state.user_vector_store
 
     # Sidebar
     with st.sidebar:
+        st.markdown(f"### {st.session_state.user} — {st.session_state.role.capitalize()}")
+        if st.button("Logout", use_container_width=True, type="secondary"):
+            st.session_state.is_authenticated = False
+            st.session_state.user = None
+            st.session_state.user_id = None
+            st.session_state.role = "user"
+            st.session_state.is_admin = False
+            st.session_state.session_id = None
+            st.session_state.messages = []
+            st.session_state.user_vector_store = None
+            st.session_state.admin_vector_store = None
+            st.rerun()
+
+        st.divider()
         # --- New Chat ---
         st.markdown("### 💬 Chat")
         if st.button("New chat", use_container_width=True, type="primary"):
             st.session_state.session_id = str(uuid.uuid4())
+            database.create_chat_session(st.session_state.session_id, st.session_state.user_id)
             st.session_state.messages = []
             st.rerun()
             
@@ -613,7 +727,10 @@ def main():
         
         # --- History / Recents ---
         st.markdown("### Recents")
-        sessions = database.get_all_sessions()
+        sessions = database.get_all_sessions(
+            user_id=st.session_state.user_id,
+            is_admin=st.session_state.is_admin
+        )
         
         if search_term:
             sessions = [s for s in sessions if s['title'] and search_term.lower() in s['title'].lower()]
@@ -631,11 +748,19 @@ def main():
                 with col1:
                     if st.button(title, key=f"hist_{s['session_id']}", use_container_width=True, type=btn_type):
                         st.session_state.session_id = s['session_id']
-                        st.session_state.messages = database.get_chat_history(s['session_id'])
+                        st.session_state.messages = database.get_chat_history(
+                            s['session_id'],
+                            user_id=st.session_state.user_id,
+                            is_admin=st.session_state.is_admin
+                        )
                         st.rerun()
                 with col2:
                     if st.button("🗑️", key=f"delete_{s['session_id']}", use_container_width=True):
-                        database.delete_chat_session(s['session_id'])
+                        database.delete_chat_session(
+                            s['session_id'],
+                            user_id=st.session_state.user_id,
+                            is_admin=st.session_state.is_admin
+                        )
                         if s['session_id'] == st.session_state.session_id:
                             st.session_state.session_id = str(uuid.uuid4())
                             st.session_state.messages = []
@@ -651,24 +776,26 @@ def main():
             st.warning("⚠️ Add your Groq API Key to `.env`", icon="⚠️")
             
         st.divider()
-        
-        # Accessible Documents for User
+
         st.markdown("### 📚 Available Data")
         st.caption("Documents used by the assistant")
-        approved_files = os.listdir(PUBLIC_DIR) if os.path.exists(PUBLIC_DIR) else []
-        if st.session_state.is_admin:
-            admin_files = os.listdir(ADMIN_DIR) if os.path.exists(ADMIN_DIR) else []
-            approved_files.extend([f"[Admin] {f}" for f in admin_files])
-            
-        if approved_files:
-            for a_file in approved_files:
-                st.caption(f"📄 {a_file}")
+        current_documents = database.get_all_documents(
+            is_admin=st.session_state.is_admin,
+            user_id=st.session_state.user_id
+        )
+        if current_documents:
+            for document in current_documents:
+                display_name = document["filename"]
+                if st.session_state.is_admin and document["visibility"] == "admin":
+                    display_name = f"[Admin] {display_name}"
+                elif st.session_state.is_admin:
+                    display_name = f"[User {document['owner_id']}] {display_name}"
+                st.caption(f"📄 {display_name}")
         else:
             st.caption("_No data available_")
 
         st.divider()
 
-        # Base Users Panel
         st.markdown("### 📁 Upload Documents")
         st.caption("Make documents available to Q&A")
         uploaded_files = st.file_uploader(
@@ -681,44 +808,36 @@ def main():
             if not uploaded_files:
                 st.warning("Please upload at least one document")
             else:
-                count = save_uploaded_files(uploaded_files, PUBLIC_DIR, visibility='public')
+                count = save_uploaded_files(
+                    uploaded_files,
+                    get_user_paths(st.session_state.user_id)[0],
+                    owner_id=st.session_state.user_id,
+                    visibility='private'
+                )
                 st.success(f"Processed {count} document(s)")
                 rebuild_vector_stores()
-                
-        st.divider()
-        
-        # Admin Login / Dashboard
-        st.markdown("### 🛡️ Admin")
-        if not st.session_state.is_admin:
-            pwd = st.text_input("Password", type="password", label_visibility="collapsed", placeholder="Enter admin password")
-            if st.button("Login", use_container_width=True):
-                user = database.authenticate_user("admin", pwd)
-                if user and user.get("role") == "admin":
-                    st.session_state.is_admin = True
-                    st.success("Admin access granted")
-                    st.rerun()
-                else:
-                    st.error("Incorrect password")
-        else:
-            if st.button("Logout", use_container_width=True):
-                st.session_state.is_admin = False
                 st.rerun()
-                
-            st.markdown("#### Manage Documents")
-            # Collect all files easily
-            all_files = []
-            if os.path.exists(PUBLIC_DIR):
-                all_files.extend([(f, PUBLIC_DIR) for f in os.listdir(PUBLIC_DIR)])
-            if os.path.exists(ADMIN_DIR):
-                all_files.extend([(f, ADMIN_DIR) for f in os.listdir(ADMIN_DIR)])
-                
-            if all_files:
-                for a_file, d_path in all_files:
-                    prefix = "[Admin] " if d_path == ADMIN_DIR else "[Public] "
-                    with st.expander(f"📄 {prefix}{a_file}", expanded=False):
-                        file_path = os.path.join(d_path, a_file)
-                        file_extension = os.path.splitext(a_file)[1].lower()
+
+        st.divider()
+
+        if st.session_state.is_admin:
+            st.markdown("### 🛡️ Admin Tools")
+            st.markdown(f"**Signed in as:** {st.session_state.user}")
+            st.caption("Admin can preview, download, and delete any document.")
+
+            all_documents = database.get_all_documents(is_admin=True)
+            if all_documents:
+                for document in all_documents:
+                    file_path = get_document_path(document)
+                    label = document["filename"]
+                    if document["visibility"] == "admin":
+                        label = f"[Admin] {label}"
+                    else:
+                        label = f"[User {document['owner_id']}] {label}"
+
+                    with st.expander(f"📄 {label}", expanded=False):
                         try:
+                            file_extension = os.path.splitext(file_path)[1].lower()
                             if file_extension == ".pdf":
                                 loader = PyPDFLoader(file_path)
                                 docs = loader.load()
@@ -733,36 +852,89 @@ def main():
                                 content = "\n".join([doc.page_content for doc in docs])
                             else:
                                 content = "Unsupported file type."
-                            st.text_area("Preview", content[:2000] + ("..." if len(content)>2000 else ""), height=120, key=f"preview_{d_path}_{a_file}", disabled=True)
+                            st.text_area("Preview", content[:2000] + ("..." if len(content) > 2000 else ""), height=120, disabled=True)
                         except Exception as e:
-                            st.error(f"Error: {e}")
+                            st.error(f"Error loading file: {e}")
                         
-                        if st.button("Delete", key=f"del_{d_path}_{a_file}", use_container_width=True):
-                            os.remove(file_path)
-                            database.remove_document(a_file)
-                            st.toast(f"Deleted {a_file}", icon="✓")
+                        with open(file_path, "rb") as f:
+                            st.download_button(
+                                label="Download file",
+                                data=f,
+                                file_name=document["filename"],
+                                use_container_width=True
+                            )
+                        if st.button("Delete", key=f"del_{document['id']}", use_container_width=True):
+                            try:
+                                os.remove(file_path)
+                            except FileNotFoundError:
+                                pass
+                            database.remove_document(document["filename"], owner_id=document["owner_id"])
                             rebuild_vector_stores()
                             st.rerun()
-            else:
-                st.caption("_No documents_")
-                
+
+            st.divider()
             st.markdown("#### Upload Admin Files")
             admin_files = st.file_uploader("Files", type=["pdf", "docx", "txt"], accept_multiple_files=True, key="admin_uploader", label_visibility="collapsed")
             if st.button("Process Admin Files", use_container_width=True):
                 if admin_files:
-                    save_uploaded_files(admin_files, ADMIN_DIR, visibility='admin')
+                    count = save_uploaded_files(admin_files, ADMIN_DIR, owner_id=st.session_state.user_id, visibility='admin')
                     rebuild_vector_stores()
-                    st.success("Admin files processed")
+                    st.success(f"Processed {count} admin document(s)")
                 else:
                     st.warning("No files to upload")
-                    
+
             st.divider()
             if st.button("🔄 Rebuild Index", use_container_width=True):
                 rebuild_vector_stores()
-            
+
             st.divider()
             if st.button("📊 Run Evaluation", use_container_width=True):
                 evaluate_pipeline_ragas()
+        else:
+            st.markdown("### 🛡️ User Tools")
+            st.caption("Upload documents and ask questions using your own document store.")
+            user_documents = database.get_all_documents(is_admin=False, user_id=st.session_state.user_id)
+            if user_documents:
+                for document in user_documents:
+                    file_path = get_document_path(document)
+                    with st.expander(f"📄 {document['filename']}", expanded=False):
+                        try:
+                            file_extension = os.path.splitext(file_path)[1].lower()
+                            if file_extension == ".pdf":
+                                loader = PyPDFLoader(file_path)
+                                docs = loader.load()
+                                content = "\n".join([doc.page_content for doc in docs])
+                            elif file_extension == ".docx":
+                                loader = Docx2txtLoader(file_path)
+                                docs = loader.load()
+                                content = "\n".join([doc.page_content for doc in docs])
+                            elif file_extension == ".txt":
+                                loader = TextLoader(file_path)
+                                docs = loader.load()
+                                content = "\n".join([doc.page_content for doc in docs])
+                            else:
+                                content = "Unsupported file type."
+                            st.text_area("Preview", content[:2000] + ("..." if len(content) > 2000 else ""), height=120, disabled=True)
+                        except Exception as e:
+                            st.error(f"Error loading file: {e}")
+                        
+                        with open(file_path, "rb") as f:
+                            st.download_button(
+                                label="Download file",
+                                data=f,
+                                file_name=document["filename"],
+                                use_container_width=True
+                            )
+                        if st.button("Delete", key=f"del_user_{document['id']}", use_container_width=True):
+                            try:
+                                os.remove(file_path)
+                            except FileNotFoundError:
+                                pass
+                            database.remove_document(document["filename"], owner_id=st.session_state.user_id)
+                            rebuild_vector_stores()
+                            st.rerun()
+            else:
+                st.caption("_No documents uploaded yet._")
 
     # Display chat messages from history on app rerun
     for message in st.session_state.messages:
@@ -776,7 +948,12 @@ def main():
         st.chat_message("user", avatar="user").markdown(prompt)
         # Add user message to chat history
         st.session_state.messages.append({"role": "user", "content": prompt})
-        database.add_chat_message(st.session_state.session_id, "user", prompt)
+        database.add_chat_message(
+            st.session_state.session_id,
+            "user",
+            prompt,
+            st.session_state.user_id
+        )
         
         # Check prerequisites
         if not groq_api_key or groq_api_key == "paste_your_actual_api_key_here":
@@ -788,9 +965,13 @@ def main():
             st.error("Please process some documents first.")
             return
             
+        extra_context = None
+        if st.session_state.is_admin:
+            extra_context = build_admin_memory_context()
+
         # Generate response
         with st.chat_message("assistant", avatar="assistant"):
-            rag_chain = build_rag_chain(current_vs, groq_api_key)
+            rag_chain = build_rag_chain(current_vs, groq_api_key, extra_context=extra_context)
             
             try:
                 # Streaming Output Initialization
@@ -822,7 +1003,12 @@ def main():
                                 st.divider()
                             
                 st.session_state.messages.append({"role": "assistant", "content": full_response})
-                database.add_chat_message(st.session_state.session_id, "assistant", full_response)
+                database.add_chat_message(
+                    st.session_state.session_id,
+                    "assistant",
+                    full_response,
+                    st.session_state.user_id
+                )
                 
             except Exception as e:
                 st.error(f"Error during streaming generation: {e}")
