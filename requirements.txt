@@ -1,0 +1,10 @@
+streamlit
+langchain==0.2.16
+langchain-community==0.2.16
+langchain-huggingface
+langchain-groq
+pypdf
+python-docx
+docx2txt
+sentence-transformers
+faiss-cpu
