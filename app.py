@@ -16,6 +16,12 @@ ADMIN_DIR = os.path.join("data", "admin")
 os.makedirs(PUBLIC_DIR, exist_ok=True)
 os.makedirs(ADMIN_DIR, exist_ok=True)
 
+# Persistent vector store paths
+VECTORSTORE_DIR = "vectorstores"
+PUBLIC_VECTORSTORE_PATH = os.path.join(VECTORSTORE_DIR, "public_index")
+ADMIN_VECTORSTORE_PATH = os.path.join(VECTORSTORE_DIR, "admin_index")
+os.makedirs(VECTORSTORE_DIR, exist_ok=True)
+
 database.init_db()
 
 # Langchain Imports
@@ -98,23 +104,45 @@ def chunk_documents(documents: List[Document]) -> List[Document]:
 @st.cache_resource
 def get_public_vector_store(_chunks: List[Document]):
     """
-    Public vectors mapping
+    Public vectors mapping - loads from disk if available, otherwise creates from documents.
     """
+    embeddings = HuggingFaceEmbeddings(model_name="sentence-transformers/all-mpnet-base-v2")
+    
+    # Try to load existing index from disk first
+    if os.path.exists(PUBLIC_VECTORSTORE_PATH):
+        try:
+            vector_store = FAISS.load_local(PUBLIC_VECTORSTORE_PATH, embeddings, allow_dangerous_deserialization=True)
+            return vector_store
+        except Exception as e:
+            st.warning(f"Could not load existing public index: {e}. Creating new one.")
+    
+    # Create new index if none exists on disk or loading failed
     if not _chunks:
         return None
-    embeddings = HuggingFaceEmbeddings(model_name="sentence-transformers/all-mpnet-base-v2")
     vector_store = FAISS.from_documents(_chunks, embeddings)
+    vector_store.save_local(PUBLIC_VECTORSTORE_PATH)
     return vector_store
 
 @st.cache_resource
 def get_admin_vector_store(_chunks: List[Document]):
     """
-    Admin vectors mapping
+    Admin vectors mapping - loads from disk if available, otherwise creates from documents.
     """
+    embeddings = HuggingFaceEmbeddings(model_name="sentence-transformers/all-mpnet-base-v2")
+    
+    # Try to load existing index from disk first
+    if os.path.exists(ADMIN_VECTORSTORE_PATH):
+        try:
+            vector_store = FAISS.load_local(ADMIN_VECTORSTORE_PATH, embeddings, allow_dangerous_deserialization=True)
+            return vector_store
+        except Exception as e:
+            st.warning(f"Could not load existing admin index: {e}. Creating new one.")
+    
+    # Create new index if none exists on disk or loading failed
     if not _chunks:
         return None
-    embeddings = HuggingFaceEmbeddings(model_name="sentence-transformers/all-mpnet-base-v2")
     vector_store = FAISS.from_documents(_chunks, embeddings)
+    vector_store.save_local(ADMIN_VECTORSTORE_PATH)
     return vector_store
 
 # ==========================================
@@ -307,6 +335,8 @@ def main():
             get_public_vector_store.clear()
             if docs:
                 st.session_state.public_vector_store = get_public_vector_store(chunk_documents(docs))
+                if st.session_state.public_vector_store:
+                    st.session_state.public_vector_store.save_local(PUBLIC_VECTORSTORE_PATH)
             else:
                 st.session_state.public_vector_store = None
 
@@ -316,6 +346,8 @@ def main():
             get_admin_vector_store.clear()
             if admin_docs:
                 st.session_state.admin_vector_store = get_admin_vector_store(chunk_documents(admin_docs))
+                if st.session_state.admin_vector_store:
+                    st.session_state.admin_vector_store.save_local(ADMIN_VECTORSTORE_PATH)
             else:
                 st.session_state.admin_vector_store = None
                 
