@@ -135,6 +135,19 @@ def get_chat_history(session_id):
     conn.close()
     return [dict(row) for row in history]
 
+def delete_chat_session(session_id):
+    """
+    Deletes a chat session and all associated messages.
+    Removes all messages linked to the session_id and commits changes safely.
+    """
+    conn = get_connection()
+    c = conn.cursor()
+    try:
+        c.execute("DELETE FROM chat_history WHERE session_id = ?", (session_id,))
+        conn.commit()
+    finally:
+        conn.close()
+
 def get_all_sessions():
     conn = get_connection()
     c = conn.cursor()

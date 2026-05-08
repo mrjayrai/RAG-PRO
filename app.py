@@ -627,10 +627,19 @@ def main():
                 # Highlight active session
                 btn_type = "primary" if s['session_id'] == st.session_state.session_id else "secondary"
                 
-                if st.button(title, key=f"hist_{s['session_id']}", use_container_width=True, type=btn_type):
-                    st.session_state.session_id = s['session_id']
-                    st.session_state.messages = database.get_chat_history(s['session_id'])
-                    st.rerun()
+                col1, col2 = st.columns([5, 1])
+                with col1:
+                    if st.button(title, key=f"hist_{s['session_id']}", use_container_width=True, type=btn_type):
+                        st.session_state.session_id = s['session_id']
+                        st.session_state.messages = database.get_chat_history(s['session_id'])
+                        st.rerun()
+                with col2:
+                    if st.button("🗑️", key=f"delete_{s['session_id']}", use_container_width=True):
+                        database.delete_chat_session(s['session_id'])
+                        if s['session_id'] == st.session_state.session_id:
+                            st.session_state.session_id = str(uuid.uuid4())
+                            st.session_state.messages = []
+                        st.rerun()
         else:
             st.caption("No recent chats yet")
             
