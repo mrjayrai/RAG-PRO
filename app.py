@@ -856,13 +856,34 @@ def main():
                         except Exception as e:
                             st.error(f"Error loading file: {e}")
                         
-                        with open(file_path, "rb") as f:
-                            st.download_button(
-                                label="Download file",
-                                data=f,
-                                file_name=document["filename"],
-                                use_container_width=True
-                            )
+                        # with open(file_path, "rb") as f:
+                        #     st.download_button(
+                        #         label="Download file",
+                        #         data=f,
+                        #         file_name=document["filename"],
+                        #         use_container_width=True
+                        #     )
+                        if os.path.exists(file_path):
+
+                            with open(file_path, "rb") as f:
+                                st.download_button(
+                                    label="Download file",
+                                    data=f,
+                                    file_name=document["filename"],
+                                    use_container_width=True
+                                )
+
+                        else:
+                            st.warning("File missing from disk.")
+
+                            # Optional cleanup
+                            try:
+                                database.remove_document(
+                                    document["filename"],
+                                    owner_id=document.get("owner_id")
+                                )
+                            except:
+                                pass
                         if st.button("Delete", key=f"del_{document['id']}", use_container_width=True):
                             try:
                                 os.remove(file_path)
@@ -899,6 +920,9 @@ def main():
                     file_path = get_document_path(document)
                     with st.expander(f"📄 {document['filename']}", expanded=False):
                         try:
+                            if not os.path.exists(file_path):
+                                st.error("File not found on disk.")
+                                continue
                             file_extension = os.path.splitext(file_path)[1].lower()
                             if file_extension == ".pdf":
                                 loader = PyPDFLoader(file_path)
