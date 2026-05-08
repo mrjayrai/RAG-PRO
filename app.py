@@ -101,48 +101,36 @@ def chunk_documents(documents: List[Document]) -> List[Document]:
 # ==========================================
 # 3. Embedding & Vector Store
 # ==========================================
-@st.cache_resource
-def get_public_vector_store(_chunks: List[Document]):
+def get_vector_store(chunks: List[Document], store_path: str):
     """
-    Public vectors mapping - loads from disk if available, otherwise creates from documents.
+    Loads or creates FAISS vector store safely.
     """
-    embeddings = HuggingFaceEmbeddings(model_name="sentence-transformers/all-mpnet-base-v2")
-    
-    # Try to load existing index from disk first
-    if os.path.exists(PUBLIC_VECTORSTORE_PATH):
-        try:
-            vector_store = FAISS.load_local(PUBLIC_VECTORSTORE_PATH, embeddings, allow_dangerous_deserialization=True)
-            return vector_store
-        except Exception as e:
-            st.warning(f"Could not load existing public index: {e}. Creating new one.")
-    
-    # Create new index if none exists on disk or loading failed
-    if not _chunks:
-        return None
-    vector_store = FAISS.from_documents(_chunks, embeddings)
-    vector_store.save_local(PUBLIC_VECTORSTORE_PATH)
-    return vector_store
+    embeddings = HuggingFaceEmbeddings(
+        model_name="sentence-transformers/all-mpnet-base-v2"
+    )
 
-@st.cache_resource
-def get_admin_vector_store(_chunks: List[Document]):
-    """
-    Admin vectors mapping - loads from disk if available, otherwise creates from documents.
-    """
-    embeddings = HuggingFaceEmbeddings(model_name="sentence-transformers/all-mpnet-base-v2")
-    
-    # Try to load existing index from disk first
-    if os.path.exists(ADMIN_VECTORSTORE_PATH):
+    # Load existing vector store if present
+    if os.path.exists(store_path):
         try:
-            vector_store = FAISS.load_local(ADMIN_VECTORSTORE_PATH, embeddings, allow_dangerous_deserialization=True)
-            return vector_store
+            return FAISS.load_local(
+                store_path,
+                embeddings,
+                allow_dangerous_deserialization=True
+            )
         except Exception as e:
-            st.warning(f"Could not load existing admin index: {e}. Creating new one.")
-    
-    # Create new index if none exists on disk or loading failed
-    if not _chunks:
+            st.warning(f"Failed loading vector store: {e}")
+
+    # Create new vector store
+    if not chunks:
         return None
-    vector_store = FAISS.from_documents(_chunks, embeddings)
-    vector_store.save_local(ADMIN_VECTORSTORE_PATH)
+
+    vector_store = FAISS.from_documents(
+        chunks,
+        embeddings
+    )
+
+    vector_store.save_local(store_path)
+
     return vector_store
 
 # ==========================================
@@ -210,97 +198,327 @@ def evaluate_pipeline_ragas():
 def main():
     st.set_page_config(page_title="HalluRAG Phase 1", page_icon="📝", layout="wide")
     
-    # Custom CSS for One Health Dashboard feel
+    # Premium Modern Dark Theme CSS
     st.markdown("""
         <style>
-        /* Main page layout */
+        /* ==========================================
+           BASE DESIGN & LAYOUT
+           ========================================== */
+        :root {
+            --primary: #6366f1;
+            --primary-hover: #4f46e5;
+            --bg-primary: #0f172a;
+            --bg-secondary: #1e293b;
+            --bg-tertiary: #334155;
+            --text-primary: #f1f5f9;
+            --text-secondary: #cbd5e1;
+            --text-tertiary: #94a3b8;
+            --border-color: #1e293b;
+            --border-subtle: #334155;
+        }
+        
+        html, body, [data-testid="stAppViewContainer"] {
+            background-color: var(--bg-primary) !important;
+            color: var(--text-primary) !important;
+        }
+        
         .block-container {
-            padding-top: 2rem;
-            max-width: 1000px;
-            margin: 0 auto;
+            padding-top: 1.5rem !important;
+            padding-bottom: 1.5rem !important;
+            max-width: 900px !important;
+            margin: 0 auto !important;
         }
         
-        /* Typography */
-        h1, h2, h3 {
-            color: #ffffff !important;
+        /* ==========================================
+           TYPOGRAPHY
+           ========================================== */
+        h1 {
+            color: var(--text-primary) !important;
+            font-size: 1.875rem !important;
+            font-weight: 700 !important;
+            letter-spacing: -0.5px !important;
+            margin-bottom: 0.5rem !important;
+        }
+        
+        h2 {
+            color: var(--text-primary) !important;
+            font-size: 1.25rem !important;
             font-weight: 600 !important;
+            letter-spacing: -0.25px !important;
+            margin-top: 1.5rem !important;
+            margin-bottom: 0.75rem !important;
         }
         
-        /* Primary Buttons styling */
-        .stButton > button[kind="primary"] {
-            background-color: #6c51ff !important;
-            color: #ffffff !important;
-            border-radius: 8px !important;
+        h3 {
+            color: var(--text-secondary) !important;
+            font-size: 1rem !important;
+            font-weight: 600 !important;
+            letter-spacing: 0px !important;
+            margin-top: 1rem !important;
+            margin-bottom: 0.5rem !important;
+        }
+        
+        p, span {
+            color: var(--text-secondary) !important;
+            font-size: 0.95rem !important;
+            line-height: 1.6 !important;
+        }
+        
+        .stCaption {
+            color: var(--text-tertiary) !important;
+            font-size: 0.85rem !important;
+            margin-top: 0.25rem !important;
+        }
+        
+        /* ==========================================
+           SIDEBAR STYLING
+           ========================================== */
+        [data-testid="stSidebar"] {
+            background-color: var(--bg-secondary) !important;
+            border-right: 1px solid var(--border-color) !important;
+        }
+        
+        [data-testid="stSidebarContent"] {
+            padding-top: 1rem !important;
+            padding-bottom: 1rem !important;
+        }
+        
+        /* Sidebar section spacing */
+        [data-testid="stSidebarContent"] > div > div {
+            margin-bottom: 0.5rem !important;
+        }
+        
+        /* ==========================================
+           BUTTONS
+           ========================================== */
+        .stButton > button {
+            border-radius: 6px !important;
+            font-weight: 500 !important;
+            font-size: 0.95rem !important;
             border: none !important;
-            padding: 0.5rem 1rem !important;
-            font-weight: bold !important;
-            transition: all 0.3s ease !important;
-            box-shadow: 0 4px 6px rgba(108, 81, 255, 0.2) !important;
-        }
-        .stButton > button[kind="primary"]:hover {
-            box-shadow: 0 6px 12px rgba(108, 81, 255, 0.4) !important;
-            transform: translateY(-1px) !important;
-            background-color: #5b42d1 !important;
+            transition: all 0.2s ease !important;
+            letter-spacing: 0.3px !important;
         }
         
-        /* Secondary Buttons / History items */
+        .stButton > button[kind="primary"] {
+            background-color: var(--primary) !important;
+            color: white !important;
+            padding: 0.5rem 1rem !important;
+            box-shadow: 0 2px 4px rgba(99, 102, 241, 0.2) !important;
+        }
+        
+        .stButton > button[kind="primary"]:hover {
+            background-color: var(--primary-hover) !important;
+            box-shadow: 0 4px 8px rgba(99, 102, 241, 0.3) !important;
+            transform: translateY(-1px) !important;
+        }
+        
         .stButton > button[kind="secondary"] {
             background-color: transparent !important;
-            color: #d1d5db !important;
-            border-radius: 8px !important;
-            border: 1px solid transparent !important;
-            padding: 0.5rem 0.5rem !important;
-            font-weight: normal !important;
-            transition: all 0.2s ease !important;
+            color: var(--text-secondary) !important;
+            border: 1px solid var(--border-subtle) !important;
+            padding: 0.5rem 0.75rem !important;
         }
+        
+        .stButton > button[kind="secondary"]:hover {
+            background-color: var(--bg-tertiary) !important;
+            color: var(--text-primary) !important;
+            border-color: var(--border-subtle) !important;
+        }
+        
         .stButton > button[kind="secondary"] p {
             text-align: left !important;
-            width: 100%;
-        }
-        .stButton > button[kind="secondary"]:hover {
-            background-color: #2a3158 !important;
-            color: #ffffff !important;
+            width: 100% !important;
+            margin: 0 !important;
         }
         
-        /* Inputs styling */
-        .stTextInput > div > div > input {
-            border-radius: 8px !important;
-            border: 1px solid #2a3158 !important;
-            background-color: #121936 !important;
-            color: #f5f5fa !important;
+        /* ==========================================
+           INPUTS & TEXT AREAS
+           ========================================== */
+        .stTextInput > div > div > input,
+        .stTextArea > div > div > textarea,
+        .stSelectbox > div > div > select {
+            background-color: var(--bg-primary) !important;
+            color: var(--text-primary) !important;
+            border: 1px solid var(--border-subtle) !important;
+            border-radius: 6px !important;
+            padding: 0.5rem 0.75rem !important;
+            font-size: 0.95rem !important;
+            transition: all 0.2s ease !important;
         }
         
-        /* Expander / Cards */
-        [data-testid="stExpander"] {
-            background-color: #1a2245 !important;
-            border-radius: 12px !important;
-            border: 1px solid #2a3158 !important;
-            overflow: hidden !important;
+        .stTextInput > div > div > input:focus,
+        .stTextArea > div > div > textarea:focus,
+        .stSelectbox > div > div > select:focus {
+            border-color: var(--primary) !important;
+            outline: none !important;
+            box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.1) !important;
         }
         
-        /* Chat UI */
-        .stChatMessage {
-            padding: 1.5rem;
-            border-radius: 12px;
-            margin-bottom: 1rem;
-            background-color: #121936;
-            border: 1px solid #1e264a;
-            box-shadow: 0 4px 10px rgba(0,0,0,0.1);
-        }
-        .stChatMessage:nth-child(even) {
-            background-color: #182042;
-        }
-        .stChatMessageAvatar {
-            background-color: transparent !important;
-        }
         .stChatInputContainer {
-            padding-bottom: 2rem;
-            border-top: none;
+            padding: 1rem 0 !important;
+            border-top: 1px solid var(--border-color) !important;
         }
         
-        /* General dividers */
+        /* ==========================================
+           CHAT MESSAGES
+           ========================================== */
+        .stChatMessage {
+            background-color: transparent !important;
+            border: none !important;
+            padding: 1rem 0 !important;
+            margin-bottom: 1rem !important;
+        }
+        
+        .stChatMessage [data-testid="stChatMessageContent"] {
+            background-color: var(--bg-secondary) !important;
+            border: 1px solid var(--border-subtle) !important;
+            border-radius: 8px !important;
+            padding: 1rem !important;
+            margin-left: 0.5rem !important;
+            box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2) !important;
+        }
+        
+        .stChatMessage[data-testid="stChatMessage-user"] [data-testid="stChatMessageContent"] {
+            background-color: var(--primary) !important;
+            border-color: var(--primary) !important;
+            color: white !important;
+        }
+        
+        .stChatMessage[data-testid="stChatMessage-user"] [data-testid="stChatMessageContent"] p,
+        .stChatMessage[data-testid="stChatMessage-user"] [data-testid="stChatMessageContent"] span {
+            color: white !important;
+        }
+        
+        .stChatMessageAvatar {
+            width: 32px !important;
+            height: 32px !important;
+            border-radius: 6px !important;
+            display: flex !important;
+            align-items: center !important;
+            justify-content: center !important;
+            font-size: 1.2rem !important;
+            background-color: var(--bg-tertiary) !important;
+        }
+        
+        .stChatMessage[data-testid="stChatMessage-user"] .stChatMessageAvatar {
+            background-color: var(--primary) !important;
+        }
+        
+        /* Chat message content markdown */
+        .stChatMessage [data-testid="stChatMessageContent"] a {
+            color: var(--primary) !important;
+            text-decoration: none !important;
+            border-bottom: 1px solid var(--primary) !important;
+        }
+        
+        .stChatMessage [data-testid="stChatMessageContent"] a:hover {
+            opacity: 0.8 !important;
+        }
+        
+        .stChatMessage [data-testid="stChatMessageContent"] code {
+            background-color: var(--bg-primary) !important;
+            color: #e879f9 !important;
+            padding: 0.2rem 0.4rem !important;
+            border-radius: 4px !important;
+            font-size: 0.9rem !important;
+        }
+        
+        .stChatMessage [data-testid="stChatMessageContent"] pre {
+            background-color: var(--bg-primary) !important;
+            border: 1px solid var(--border-color) !important;
+            border-radius: 6px !important;
+            padding: 1rem !important;
+            overflow-x: auto !important;
+        }
+        
+        /* ==========================================
+           EXPANDERS & CONTAINERS
+           ========================================== */
+        [data-testid="stExpander"] {
+            background-color: var(--bg-secondary) !important;
+            border: 1px solid var(--border-subtle) !important;
+            border-radius: 6px !important;
+        }
+        
+        [data-testid="stExpanderDetails"] {
+            background-color: var(--bg-primary) !important;
+            border-top: 1px solid var(--border-color) !important;
+        }
+        
+        /* ==========================================
+           FILE UPLOADER
+           ========================================== */
+        [data-testid="stFileUploadDropzone"] {
+            background-color: var(--bg-primary) !important;
+            border: 2px dashed var(--border-subtle) !important;
+            border-radius: 8px !important;
+            transition: all 0.2s ease !important;
+        }
+        
+        [data-testid="stFileUploadDropzone"]:hover {
+            border-color: var(--primary) !important;
+            background-color: rgba(99, 102, 241, 0.05) !important;
+        }
+        
+        /* ==========================================
+           ALERTS & NOTIFICATIONS
+           ========================================== */
+        .stAlert {
+            border-radius: 6px !important;
+            padding: 1rem !important;
+            border: 1px solid !important;
+        }
+        
+        .stSuccess {
+            background-color: rgba(34, 197, 94, 0.1) !important;
+            border-color: rgba(34, 197, 94, 0.3) !important;
+        }
+        
+        .stInfo {
+            background-color: rgba(59, 130, 246, 0.1) !important;
+            border-color: rgba(59, 130, 246, 0.3) !important;
+        }
+        
+        .stWarning {
+            background-color: rgba(245, 158, 11, 0.1) !important;
+            border-color: rgba(245, 158, 11, 0.3) !important;
+        }
+        
+        .stError {
+            background-color: rgba(239, 68, 68, 0.1) !important;
+            border-color: rgba(239, 68, 68, 0.3) !important;
+        }
+        
+        /* ==========================================
+           DIVIDERS
+           ========================================== */
         hr {
-            border-color: #2a3158 !important;
+            border: none !important;
+            border-top: 1px solid var(--border-color) !important;
+            margin: 1rem 0 !important;
+        }
+        
+        /* ==========================================
+           RESPONSIVE DESIGN
+           ========================================== */
+        @media (max-width: 768px) {
+            .block-container {
+                padding-left: 1rem !important;
+                padding-right: 1rem !important;
+            }
+            
+            h1 {
+                font-size: 1.5rem !important;
+            }
+            
+            h2 {
+                font-size: 1.1rem !important;
+            }
+            
+            [data-testid="stSidebar"] {
+                width: 100% !important;
+            }
         }
         </style>
     """, unsafe_allow_html=True)
@@ -330,24 +548,31 @@ def main():
     database.seed_admin_if_needed(admin_pass)
     
     def rebuild_vector_stores():
+        # Remove old indexes completely
+        if os.path.exists(PUBLIC_VECTORSTORE_PATH):
+            shutil.rmtree(PUBLIC_VECTORSTORE_PATH, ignore_errors=True)
+
+        if os.path.exists(ADMIN_VECTORSTORE_PATH):
+            shutil.rmtree(ADMIN_VECTORSTORE_PATH, ignore_errors=True)
+
         with st.spinner("Reading public documents..."):
             docs = load_directory_documents(PUBLIC_DIR)
-            get_public_vector_store.clear()
             if docs:
-                st.session_state.public_vector_store = get_public_vector_store(chunk_documents(docs))
-                if st.session_state.public_vector_store:
-                    st.session_state.public_vector_store.save_local(PUBLIC_VECTORSTORE_PATH)
+                st.session_state.public_vector_store = get_vector_store(
+                    chunk_documents(docs),
+                    PUBLIC_VECTORSTORE_PATH
+                )
             else:
                 st.session_state.public_vector_store = None
 
         with st.spinner("Reading admin documents..."):
             admin_docs = list(docs) if docs else []
             admin_docs.extend(load_directory_documents(ADMIN_DIR))
-            get_admin_vector_store.clear()
             if admin_docs:
-                st.session_state.admin_vector_store = get_admin_vector_store(chunk_documents(admin_docs))
-                if st.session_state.admin_vector_store:
-                    st.session_state.admin_vector_store.save_local(ADMIN_VECTORSTORE_PATH)
+                st.session_state.admin_vector_store = get_vector_store(
+                    chunk_documents(admin_docs),
+                    ADMIN_VECTORSTORE_PATH
+                )
             else:
                 st.session_state.admin_vector_store = None
                 
@@ -357,13 +582,19 @@ def main():
     if st.session_state.public_vector_store is None:
         docs = load_directory_documents(PUBLIC_DIR)
         if docs:
-            st.session_state.public_vector_store = get_public_vector_store(chunk_documents(docs))
+            st.session_state.public_vector_store = get_vector_store(
+                chunk_documents(docs),
+                PUBLIC_VECTORSTORE_PATH
+            )
             
     if st.session_state.admin_vector_store is None and st.session_state.is_admin:
         docs = load_directory_documents(PUBLIC_DIR)
         docs.extend(load_directory_documents(ADMIN_DIR))
         if docs:
-            st.session_state.admin_vector_store = get_admin_vector_store(chunk_documents(docs))
+            st.session_state.admin_vector_store = get_vector_store(
+                chunk_documents(docs),
+                ADMIN_VECTORSTORE_PATH
+            )
 
     def get_current_vector_store():
         return st.session_state.admin_vector_store if st.session_state.is_admin else st.session_state.public_vector_store
@@ -371,16 +602,17 @@ def main():
     # Sidebar
     with st.sidebar:
         # --- New Chat ---
-        if st.button("📝 New chat", use_container_width=True, type="primary"):
+        st.markdown("### 💬 Chat")
+        if st.button("New chat", use_container_width=True, type="primary"):
             st.session_state.session_id = str(uuid.uuid4())
             st.session_state.messages = []
             st.rerun()
             
         # --- Search Chats ---
-        search_term = st.text_input("🔍 Search chats", placeholder="Search chats...", label_visibility="collapsed")
+        search_term = st.text_input("Search", placeholder="Search chats...", label_visibility="collapsed")
         
         # --- History / Recents ---
-        st.subheader("Recents")
+        st.markdown("### Recents")
         sessions = database.get_all_sessions()
         
         if search_term:
@@ -400,20 +632,20 @@ def main():
                     st.session_state.messages = database.get_chat_history(s['session_id'])
                     st.rerun()
         else:
-            st.info("No recent chats found.")
+            st.caption("No recent chats yet")
             
         st.divider()
 
-        st.header("⚙️ Configuration")
+        st.markdown("### ⚙️ Configuration")
         
         if not groq_api_key or groq_api_key == "paste_your_actual_api_key_here":
-            st.warning("⚠️ Please add your exact Groq API Key to the `.env` file.")
+            st.warning("⚠️ Add your Groq API Key to `.env`", icon="⚠️")
             
         st.divider()
         
         # Accessible Documents for User
-        st.header("📚 Available Data")
-        st.caption("Currently active documents used by the Bot.")
+        st.markdown("### 📚 Available Data")
+        st.caption("Documents used by the assistant")
         approved_files = os.listdir(PUBLIC_DIR) if os.path.exists(PUBLIC_DIR) else []
         if st.session_state.is_admin:
             admin_files = os.listdir(ADMIN_DIR) if os.path.exists(ADMIN_DIR) else []
@@ -421,48 +653,49 @@ def main():
             
         if approved_files:
             for a_file in approved_files:
-                st.write(f"🔸 {a_file}")
+                st.caption(f"📄 {a_file}")
         else:
-            st.info("No data available yet.")
+            st.caption("_No data available_")
 
         st.divider()
 
         # Base Users Panel
-        st.header("📁 User Uploads")
-        st.caption("Upload public documents to immediately start Q&A.")
+        st.markdown("### 📁 Upload Documents")
+        st.caption("Make documents available to Q&A")
         uploaded_files = st.file_uploader(
             "Upload files", 
             type=["pdf", "docx", "txt"], 
-            accept_multiple_files=True
+            accept_multiple_files=True,
+            label_visibility="collapsed"
         )
         if st.button("Upload and Process", use_container_width=True, type="primary"):
             if not uploaded_files:
-                st.warning("Please upload at least one document.")
+                st.warning("Please upload at least one document")
             else:
                 count = save_uploaded_files(uploaded_files, PUBLIC_DIR, visibility='public')
-                st.success(f"Successfully processed {count} document(s).")
+                st.success(f"Processed {count} document(s)")
                 rebuild_vector_stores()
                 
         st.divider()
         
         # Admin Login / Dashboard
-        st.header("🛡️ Admin Area")
+        st.markdown("### 🛡️ Admin")
         if not st.session_state.is_admin:
-            pwd = st.text_input("Admin Password", type="password")
-            if st.button("Login"):
+            pwd = st.text_input("Password", type="password", label_visibility="collapsed", placeholder="Enter admin password")
+            if st.button("Login", use_container_width=True):
                 user = database.authenticate_user("admin", pwd)
                 if user and user.get("role") == "admin":
                     st.session_state.is_admin = True
-                    st.success("Logged in as Admin.")
+                    st.success("Admin access granted")
                     st.rerun()
                 else:
                     st.error("Incorrect password")
         else:
-            if st.button("Logout"):
+            if st.button("Logout", use_container_width=True):
                 st.session_state.is_admin = False
                 st.rerun()
                 
-            st.subheader("Manage Active Documents")
+            st.markdown("#### Manage Documents")
             # Collect all files easily
             all_files = []
             if os.path.exists(PUBLIC_DIR):
@@ -473,7 +706,7 @@ def main():
             if all_files:
                 for a_file, d_path in all_files:
                     prefix = "[Admin] " if d_path == ADMIN_DIR else "[Public] "
-                    with st.expander(f"Review: {prefix}{a_file}"):
+                    with st.expander(f"📄 {prefix}{a_file}", expanded=False):
                         file_path = os.path.join(d_path, a_file)
                         file_extension = os.path.splitext(a_file)[1].lower()
                         try:
@@ -491,47 +724,47 @@ def main():
                                 content = "\n".join([doc.page_content for doc in docs])
                             else:
                                 content = "Unsupported file type."
-                            st.text_area("Content Preview", content[:2000] + ("..." if len(content)>2000 else ""), height=150, key=f"preview_{d_path}_{a_file}")
+                            st.text_area("Preview", content[:2000] + ("..." if len(content)>2000 else ""), height=120, key=f"preview_{d_path}_{a_file}", disabled=True)
                         except Exception as e:
-                            st.error(f"Error loading preview: {e}")
+                            st.error(f"Error: {e}")
                         
-                        if st.button("🗑️ Delete Document", key=f"del_{d_path}_{a_file}", use_container_width=True):
+                        if st.button("Delete", key=f"del_{d_path}_{a_file}", use_container_width=True):
                             os.remove(file_path)
                             database.remove_document(a_file)
-                            st.toast(f"Deleted {a_file}")
+                            st.toast(f"Deleted {a_file}", icon="✓")
                             rebuild_vector_stores()
                             st.rerun()
             else:
-                st.info("No active documents.")
+                st.caption("_No documents_")
                 
-            st.subheader("Direct Admin Upload")
-            admin_files = st.file_uploader("Upload additional files", type=["pdf", "docx", "txt"], accept_multiple_files=True, key="admin_uploader")
-            if st.button("Upload & Index", use_container_width=True):
+            st.markdown("#### Upload Admin Files")
+            admin_files = st.file_uploader("Files", type=["pdf", "docx", "txt"], accept_multiple_files=True, key="admin_uploader", label_visibility="collapsed")
+            if st.button("Process Admin Files", use_container_width=True):
                 if admin_files:
                     save_uploaded_files(admin_files, ADMIN_DIR, visibility='admin')
                     rebuild_vector_stores()
+                    st.success("Admin files processed")
                 else:
-                    st.warning("No files uploaded.")
+                    st.warning("No files to upload")
                     
             st.divider()
-            if st.button("🔄 Rebuild Main Index"):
+            if st.button("🔄 Rebuild Index", use_container_width=True):
                 rebuild_vector_stores()
             
             st.divider()
-            if st.button("Run Evaluation (Mock)", use_container_width=True):
+            if st.button("📊 Run Evaluation", use_container_width=True):
                 evaluate_pipeline_ragas()
 
     # Display chat messages from history on app rerun
     for message in st.session_state.messages:
-        # Define avatars
-        avatar = "🧑‍💻" if message["role"] == "user" else "🤖"
+        avatar = "user" if message["role"] == "user" else "assistant"
         with st.chat_message(message["role"], avatar=avatar):
             st.markdown(message["content"])
 
     # React to user input
     if prompt := st.chat_input("Message HalluRAG..."):
         # Display user message in chat message container
-        st.chat_message("user", avatar="🧑‍💻").markdown(prompt)
+        st.chat_message("user", avatar="user").markdown(prompt)
         # Add user message to chat history
         st.session_state.messages.append({"role": "user", "content": prompt})
         database.add_chat_message(st.session_state.session_id, "user", prompt)
@@ -547,7 +780,7 @@ def main():
             return
             
         # Generate response
-        with st.chat_message("assistant", avatar="🤖"):
+        with st.chat_message("assistant", avatar="assistant"):
             rag_chain = build_rag_chain(current_vs, groq_api_key)
             
             try:
@@ -572,11 +805,12 @@ def main():
                 
                 # Display sources if requested (tucked beneath the response)
                 if sources:
-                    with st.expander("View Source Context"):
+                    with st.expander("📖 View Source Context"):
                         for i, doc in enumerate(sources):
                             st.markdown(f"**Chunk {i+1}:**")
-                            st.write(doc.page_content)
-                            st.divider()
+                            st.markdown(doc.page_content)
+                            if i < len(sources) - 1:
+                                st.divider()
                             
                 st.session_state.messages.append({"role": "assistant", "content": full_response})
                 database.add_chat_message(st.session_state.session_id, "assistant", full_response)
