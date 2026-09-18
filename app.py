@@ -6,6 +6,7 @@ import uuid
 from typing import List
 from dotenv import load_dotenv
 from hallucination_detector import score_response
+import streamlit.components.v1 as components
 
 import database
 
@@ -24,6 +25,32 @@ os.makedirs(VECTORSTORE_DIR, exist_ok=True)
 
 database.init_db()
 
+def render_copy_button(text, key):
+    escaped_text = (
+        text.replace("\\", "\\\\")
+            .replace("`", "\\`")
+            .replace("$", "\\$")
+    )
+
+    copy_html = f"""
+    <div style="display:flex;justify-content:flex-end;margin-top:5px;">
+        <button
+            onclick="navigator.clipboard.writeText(`{escaped_text}`)"
+            style="
+                background:#262730;
+                color:white;
+                border:1px solid #555;
+                border-radius:6px;
+                padding:4px 10px;
+                cursor:pointer;
+                font-size:14px;
+            ">
+            📋 Copy
+        </button>
+    </div>
+    """
+
+    components.html(copy_html, height=40, scrolling=False)
 
 def get_user_paths(user_id: int):
     document_dir = os.path.join(USERS_DIR, str(user_id), "documents")
@@ -1028,6 +1055,11 @@ def main():
                         
                 # Ensure the final markdown is shown cleanly without the cursor
                 placeholder.markdown(full_response)
+
+                render_copy_button(
+                    full_response,
+                    str(uuid.uuid4())
+                )
 
                 retrieved_context = ""
 
