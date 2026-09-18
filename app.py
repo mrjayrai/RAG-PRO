@@ -5,6 +5,7 @@ import streamlit as st
 import uuid
 from typing import List
 from dotenv import load_dotenv
+from hallucination_detector import score_response
 
 import database
 
@@ -93,7 +94,10 @@ def load_directory_documents(directory_path) -> List[Document]:
                 loader = Docx2txtLoader(file_path)
                 documents.extend(loader.load())
             elif file_extension == ".txt":
-                loader = TextLoader(file_path)
+                loader = TextLoader(
+                    file_path,
+                    encoding="utf-8"
+                )
                 documents.extend(loader.load())
         except Exception as e:
             st.error(f"Error loading {filename}: {e}")
@@ -847,7 +851,11 @@ def main():
                                 docs = loader.load()
                                 content = "\n".join([doc.page_content for doc in docs])
                             elif file_extension == ".txt":
-                                loader = TextLoader(file_path)
+                                # loader = TextLoader(file_path)
+                                loader = TextLoader(
+                                    file_path,
+                                    encoding="utf-8"
+                                )
                                 docs = loader.load()
                                 content = "\n".join([doc.page_content for doc in docs])
                             else:
@@ -933,7 +941,11 @@ def main():
                                 docs = loader.load()
                                 content = "\n".join([doc.page_content for doc in docs])
                             elif file_extension == ".txt":
-                                loader = TextLoader(file_path)
+                                # loader = TextLoader(file_path)
+                                loader = TextLoader(
+                                    file_path,
+                                    encoding="utf-8"
+                                )
                                 docs = loader.load()
                                 content = "\n".join([doc.page_content for doc in docs])
                             else:
@@ -1016,6 +1028,41 @@ def main():
                         
                 # Ensure the final markdown is shown cleanly without the cursor
                 placeholder.markdown(full_response)
+
+                retrieved_context = ""
+
+                if sources:
+                    retrieved_context = "\n\n".join(
+                        [doc.page_content for doc in sources]
+                    )
+
+                hallucination_result = score_response(
+                    retrieved_context,
+                    full_response
+                )
+
+                st.divider()
+
+                st.subheader("🧠 Hallucination Analysis")
+
+                st.metric(
+                    "Faithfulness Score",
+                    f"{hallucination_result['faithfulness_score']}%"
+                )
+
+                classification = hallucination_result["hallucination_type"]
+
+                if classification == "Faithful Response":
+                    st.success(classification)
+
+                elif classification == "Unsupported Hallucination":
+                    st.warning(classification)
+
+                else:
+                    st.error(classification)
+
+                with st.expander("View DeBERTa Scores"):
+                    st.json(hallucination_result["raw_scores"])
                 
                 # Display sources if requested (tucked beneath the response)
                 if sources:
