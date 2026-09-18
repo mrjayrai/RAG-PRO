@@ -171,7 +171,7 @@ def build_rag_chain(vector_store, groq_api_key: str, extra_context: str = None):
     # Initialize Llama 3 model via Groq API
     llm = ChatGroq(
         groq_api_key=groq_api_key,
-        model_name="llama-3.1-8b-instant", # Updated model because previous was decommissioned
+        model_name="openai/gpt-oss-120b", # Updated model because previous was decommissioned
         temperature=0.0 # Keep temperature 0 for strictly factual responses
     )
 
