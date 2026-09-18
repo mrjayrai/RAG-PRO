@@ -13,6 +13,7 @@ transformers
 torch
 sentencepiece
 accelerate
+python-dotenv
 
 # Optional (recommended for multilingual models)
 safetensors
