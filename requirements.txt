@@ -8,3 +8,12 @@ python-docx
 docx2txt
 sentence-transformers
 faiss-cpu
+
+transformers
+torch
+sentencepiece
+accelerate
+
+# Optional (recommended for multilingual models)
+safetensors
+tokenizers
