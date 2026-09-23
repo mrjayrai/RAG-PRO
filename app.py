@@ -25,6 +25,14 @@ os.makedirs(VECTORSTORE_DIR, exist_ok=True)
 
 database.init_db()
 
+@st.cache_resource
+def load_embeddings():
+    return HuggingFaceEmbeddings(
+        model_name="sentence-transformers/all-MiniLM-L6-v2",
+        model_kwargs={"device": "cpu"},
+        encode_kwargs={"normalize_embeddings": True}
+    )
+
 def render_copy_button(text, key):
     escaped_text = (
         text.replace("\\", "\\\\")
@@ -160,11 +168,7 @@ def get_vector_store(chunks: List[Document], store_path: str):
     """
     Loads or creates FAISS vector store safely.
     """
-    embeddings = HuggingFaceEmbeddings(
-    model_name="sentence-transformers/all-MiniLM-L6-v2",
-    model_kwargs={"device": "cpu"},
-    encode_kwargs={"normalize_embeddings": True}
-)
+    embeddings = load_embeddings()
 
     # Load existing vector store if present
     if os.path.exists(store_path):
