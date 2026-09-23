@@ -214,7 +214,7 @@ def build_rag_chain(vector_store, groq_api_key: str, extra_context: str = None):
     system_prompt = (
         "You are an expert AI assistant providing detailed, structured, and highly readable answers. "
         "Your task is to answer the user's question ONLY using the provided context. "
-        "If the answer is not contained in the context, say 'I cannot answer this based on the provided context' and stop. "
+        "If the answer is directly stated in the context,answer directly.If the answer can be reasonably inferred from the context,provide the inference and explain it.Only say'I cannot answer this based on the provided context'when the context contains no relevant information."
         "Do not make up information or use external knowledge. \n\n"
         "When you construct your answer, please use the following guidelines to mimic a premium ChatGPT-like response:\n"
         "- Provide a comprehensive and detailed explanation based entirely on the context.\n"
@@ -1071,7 +1071,6 @@ def main():
                     retrieved_context = "\n\n".join(
                         [doc.page_content for doc in sources]
                     )
-
                 hallucination_result = score_response(
                     retrieved_context,
                     full_response
